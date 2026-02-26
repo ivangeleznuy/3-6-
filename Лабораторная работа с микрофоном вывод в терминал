@@ -1,0 +1,85 @@
+// Подключаем библиотеку для FFT анализа
+#include <arduinoFFT.h>
+// Пин A0 для подключения микрофона
+#define MIC_PIN A0
+// Размер окна FFT: 128 отсчетов (уменьшено с 256 для экономии памяти!)
+#define FFT_SAMPLES 128
+// Частота дискретизации в Герцах (макс. анализируемая частота = 4000/2 = 2000 Гц)
+#define SAMPLING_FREQ 4000
+// Скорость передачи данных через Serial порт (для монитора порта)
+#define SERIAL_BAUD 115200
+
+// Вычисляем количество частотных полос: всегда половина от размера FFT
+#define FFT_BANDS (FFT_SAMPLES / 2)
+// Переменная для хранения периода дискретизации в микросекундах
+unsigned int sampling_period_us;
+
+// Создаем объект FFT с типом float (экономит память на AVR-процессорах)
+ArduinoFFT<float> FFT = ArduinoFFT<float>();
+
+// Массив для действительной части сигнала (входные данные и результат FFT)
+float vReal[FFT_SAMPLES];
+// Массив для мнимой части сигнала (заполняется нулями для реального сигнала)
+float vImag[FFT_SAMPLES];
+
+void setup() {
+  // Инициализация Serial порта с заданной скоростью
+  Serial.begin(SERIAL_BAUD);
+  // Вычисляем период дискретизации в микросекундах (1 секунда / частота)
+  sampling_period_us = round(1000000.0 / SAMPLING_FREQ);
+  
+  // Пауза 1 секунда для стабилизации соединения
+  delay(1000);
+  // Вывод заголовка в Serial монитор
+  Serial.println("=== DFFT 64 Bands Started ===");
+  // Вывод частоты дискретизации
+  Serial.print("Sampling: "); Serial.print(SAMPLING_FREQ); Serial.println(" Hz");
+  // Вывод количества полос спектра
+  Serial.print("Bands: "); Serial.println(FFT_BANDS);
+  // Вывод количества свободной памяти для диагностики
+  Serial.print("Free RAM: "); Serial.println(freeMemory());
+}
+
+void loop() {
+  // Цикл сбора 128 отсчетов сигнала
+  for (int i = 0; i < FFT_SAMPLES; i++) {
+    // Чтение значения с микрофона (0-1023) и запись в массив действительных чисел
+    vReal[i] = analogRead(MIC_PIN);
+    // Обнуление мнимой части (для реального аудиосигнала она всегда 0)
+    vImag[i] = 0;
+    
+    // Запоминание текущего времени в микросекундах
+    unsigned long startMicros = micros();
+    // Цикл точного ожидания нужного интервала для равномерной дискретизации
+    while ((micros() - startMicros) < sampling_period_us) {
+      // Пустая операция для точной выдержки времени
+      asm volatile("nop");
+    }
+  }
+  // Применение окна Ханна для уменьшения искажений спектра
+  FFT.windowing(vReal, FFT_SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  // Выполнение прямого быстрого преобразования Фурье
+  FFT.compute(vReal, vImag, FFT_SAMPLES, FFT_FORWARD);
+  // Вычисление амплитуды (модуля) для каждой частоты
+  FFT.complexToMagnitude(vReal, vImag, FFT_SAMPLES);
+  // Цикл по всем 64 частотным полосам
+  for (int i = 0; i < FFT_BANDS; i++) {
+    // Масштабируем значение амплитуды для наглядности (умножаем на 2, ограничиваем 0-255)
+    int val = (int)constrain(vReal[i] * 2, 0, 255);
+    // Вывод значения в Serial
+    Serial.print(val);
+    // Если это не последнее значение — добавляем запятую (CSV формат)
+    if (i < FFT_BANDS - 1) Serial.print(",");
+  }
+  // Переход на новую строку после вывода всех 64 значений
+  Serial.println();
+}
+// Функция для проверки количества свободной оперативной памяти
+int freeMemory() {
+  // Объявление внешних переменных, определенных в линковщике AVR
+  extern int __heap_start, *__brkval;
+  // Локальная переменная для получения адреса в стеке
+  int v;
+  // Вычисление разницы между адресом переменной в стеке и верхней границей кучи
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
